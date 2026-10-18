@@ -30,6 +30,8 @@ mod shutdown;
 pub(crate) use shutdown::monitor_host_shutdown;
 mod power;
 pub(crate) use power::monitor_host_power;
+mod displays;
+pub(crate) use displays::awake_display_count;
 
 mod launchd_spawn;
 pub(crate) use launchd_spawn::{leave_launchd_job, spawn_launchd_job};

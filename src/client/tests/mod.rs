@@ -54,6 +54,8 @@ fn resize_poll_loop_keeps_polling_through_a_transient_zero_grid() {
             }
         },
         move || signals.next().unwrap_or(false),
+        || None,
+        std::time::Instant::now,
         &should_quit,
     );
 
@@ -70,6 +72,68 @@ fn resize_poll_loop_keeps_polling_through_a_transient_zero_grid() {
             [super::ClientLoopEvent::Resize(80, 24, 8, 16, true)]
         ),
         "expected exactly one recovered resize report"
+    );
+}
+
+#[test]
+fn resize_poll_loop_withholds_a_window_parked_by_display_sleep() {
+    let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel(8);
+    let should_quit = Arc::new(AtomicBool::new(false));
+    let quit = Arc::clone(&should_quit);
+    let wide = (262u16, 67u16, 8u32, 16u32, true);
+    let parked = (126u16, 38u16, 8u32, 16u32, true);
+    // (ms, awake displays, geometry, SIGWINCH) replaying the 2026-10-18 capture:
+    // displays sleep, the external returns late, the window is parked on the
+    // built-in display, then moved back.
+    let ticks = [
+        (0u64, 2u32, wide, false),
+        (1_000, 0, wide, false),
+        (61_900, 1, wide, false),
+        (64_400, 1, parked, true),
+        (64_500, 2, parked, false),
+        (65_700, 2, wide, true),
+        (65_800, 2, parked, true),
+    ];
+    let base = std::time::Instant::now();
+    let clock = std::cell::Cell::new(0usize);
+    let tick = |index: usize| ticks[index.min(ticks.len() - 1)];
+
+    super::terminal_geometry::resize_poll_loop_with(
+        resize_tx,
+        wide,
+        |_| Ok(tick(clock.get()).2),
+        || tick(clock.get()).3,
+        // The display sample is the last call of a tick, so it advances the
+        // replay and stops the loop after the final tick.
+        || {
+            let index = clock.get();
+            clock.set(index + 1);
+            if index + 1 >= ticks.len() {
+                quit.store(true, Ordering::Release);
+            }
+            Some(tick(index).1)
+        },
+        || base + std::time::Duration::from_millis(tick(clock.get()).0),
+        &should_quit,
+    );
+
+    let mut events = Vec::new();
+    while let Ok(event) = resize_rx.try_recv() {
+        events.push(event);
+    }
+    // The parked size never reaches the server while the topology is
+    // transient. The window's return re-reports its unchanged size once (the
+    // pending SIGWINCH), and a later resize passes through.
+    assert!(
+        matches!(
+            events.as_slice(),
+            [
+                super::ClientLoopEvent::Resize(262, 67, 8, 16, true),
+                super::ClientLoopEvent::Resize(126, 38, 8, 16, true),
+            ]
+        ),
+        "unexpected resize reports: {}",
+        events.len()
     );
 }
 
@@ -95,6 +159,8 @@ fn resize_poll_loop_detaches_once_on_a_real_terminal_failure() {
                 .expect("polling must stop after a real terminal failure")
         },
         || false,
+        || None,
+        std::time::Instant::now,
         &should_quit,
     );
 

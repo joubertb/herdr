@@ -19,6 +19,7 @@ mod clipboard_images;
 mod config_reload;
 #[cfg(unix)]
 mod direct_graphics;
+mod display_gate;
 pub(crate) mod endpoint;
 mod endpoint_commands;
 mod errors;

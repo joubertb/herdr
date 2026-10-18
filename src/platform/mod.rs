@@ -443,6 +443,12 @@ pub(crate) fn watch_terminal_resize_signal() {
 #[cfg(not(unix))]
 pub(crate) fn watch_terminal_resize_signal() {}
 
+/// Other platforms do not expose display topology to the resize watcher.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn awake_display_count() -> Option<u32> {
+    None
+}
+
 /// Returns whether a terminal size change was signalled since the last call.
 #[cfg(unix)]
 pub(crate) fn take_terminal_resize_signal() -> bool {

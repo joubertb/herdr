@@ -1,11 +1,12 @@
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use tracing::debug;
 
+use super::display_gate::DisplayTopologyGate;
 use super::ClientLoopEvent;
 
 const DEFAULT_CELL_WIDTH_PX: u32 = 8;
@@ -159,20 +160,26 @@ pub(super) fn resize_poll_loop(
             )
         },
         crate::platform::take_terminal_resize_signal,
+        crate::platform::awake_display_count,
+        Instant::now,
         should_quit,
     );
 }
 
-/// The resize watcher loop, with its geometry and resize-signal sources
-/// injected so the transient/recovery behavior is testable without a terminal.
+/// The resize watcher loop, with its geometry, resize-signal, display, and
+/// clock sources injected so the transient/recovery behavior is testable
+/// without a terminal.
 pub(super) fn resize_poll_loop_with(
     resize_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
     initial_size: (u16, u16, u32, u32, bool),
     mut read_geometry: impl FnMut((u32, u32)) -> io::Result<TerminalGeometry>,
     mut take_signal: impl FnMut() -> bool,
+    mut awake_displays: impl FnMut() -> Option<u32>,
+    mut now: impl FnMut() -> Instant,
     should_quit: &Arc<AtomicBool>,
 ) {
     let mut last_size = initial_size;
+    let mut display_gate = DisplayTopologyGate::new();
     // Retained across a transient sample so a resize that lands back on the
     // same size still re-reports (host modes may have been reset).
     let mut signalled = false;
@@ -192,6 +199,12 @@ pub(super) fn resize_poll_loop_with(
                 }
             };
         let new_size = (cols, rows, cell_width_px, cell_height_px, exact);
+        // Sampled after the geometry, so a size from a parked window is never
+        // paired with the topology from before the display went away. A held
+        // tick keeps the pending signal, like a transient sample.
+        if !display_gate.admit(now(), awake_displays(), new_size == last_size) {
+            continue;
+        }
         if resize_report_required(signalled, new_size, last_size) {
             last_size = new_size;
             if resize_tx
